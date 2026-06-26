@@ -1,0 +1,32 @@
+name: Journal sync
+
+on:
+  schedule:
+    # Mondays at 00:00 UTC (5:30 AM IST)
+    - cron: "0 0 * * 1"
+  workflow_dispatch: {}
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out this repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run journal sync
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_NOTES_TOKEN }}
+          GITHUB_OWNER: ${{ secrets.GH_NOTES_OWNER }}
+          GITHUB_REPO: ${{ secrets.GH_NOTES_REPO }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          MISTRAL_API_KEY: ${{ secrets.MISTRAL_API_KEY }}
+        run: python sync.py
