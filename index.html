@@ -379,6 +379,23 @@
   }
 
   // ---------- GitHub API push ----------
+  async function getExistingSha(url, cfg) {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        "Authorization": `Bearer ${cfg.token}`,
+        "Accept": "application/vnd.github+json"
+      }
+    });
+    if (res.status === 404) return null; // file doesn't exist yet — fine, create it
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`github_${res.status}: ${errBody.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    return data.sha;
+  }
+
   async function pushToGitHub(record) {
     const cfg = getConfig();
     if (!cfg.token || !cfg.owner || !cfg.repo) {
@@ -389,6 +406,15 @@
     const content = buildFileContent(record.body);
     const b64 = btoa(unescape(encodeURIComponent(content)));
 
+    // Check whether this file already exists — if it does, we need its sha to update it
+    const sha = await getExistingSha(url, cfg);
+
+    const payload = {
+      message: sha ? `Update note ${record.filename}` : `Add note ${record.filename}`,
+      content: b64
+    };
+    if (sha) payload.sha = sha;
+
     const res = await fetch(url, {
       method: "PUT",
       headers: {
@@ -396,10 +422,7 @@
         "Accept": "application/vnd.github+json",
         "Content-Type": "application/json"
       },
-      body: JSON.stringify({
-        message: `Add note ${record.filename}`,
-        content: b64
-      })
+      body: JSON.stringify(payload)
     });
 
     if (!res.ok) {
@@ -525,4 +548,4 @@
 })();
 </script>
 </body>
-</html> 
+</html>
