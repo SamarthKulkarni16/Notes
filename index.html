@@ -240,6 +240,144 @@
   .btn-primary:hover { background: var(--accent); }
   .btn-secondary { background: transparent; color: var(--muted); }
   .btn-secondary:hover { color: var(--text); }
+
+  /* History overlay */
+  .history-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10, 11, 14, 0.85);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 20;
+    padding: 5vh 20px;
+  }
+  .history-overlay.open { display: flex; }
+
+  .history-panel {
+    background: var(--panel);
+    border-radius: 12px;
+    width: 100%;
+    max-width: 560px;
+    height: 100%;
+    max-height: 720px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .history-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    border-bottom: 1px solid #262b33;
+    flex-shrink: 0;
+  }
+
+  .history-head h2 {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-weight: 600;
+    font-size: 1.15rem;
+  }
+
+  .history-close, .history-back {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-family: 'Inter', sans-serif;
+    font-size: 0.9rem;
+    cursor: pointer;
+    padding: 4px 6px;
+  }
+  .history-close:hover, .history-back:hover { color: var(--text); }
+
+  .history-list {
+    overflow-y: auto;
+    flex: 1;
+  }
+
+  .history-item {
+    padding: 16px 22px;
+    border-bottom: 1px solid #20242c;
+    cursor: pointer;
+    transition: background 0.15s ease;
+  }
+  .history-item:hover { background: #23272f; }
+
+  .history-item-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 4px;
+    gap: 10px;
+  }
+
+  .history-item-date {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-weight: 600;
+    font-size: 1rem;
+    color: var(--text);
+  }
+
+  .history-item-time {
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .history-item-preview {
+    font-size: 0.88rem;
+    color: var(--muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .history-empty, .history-loading, .history-error {
+    padding: 40px 22px;
+    color: var(--muted);
+    font-size: 0.9rem;
+    text-align: center;
+  }
+  .history-error { color: var(--error); }
+
+  .history-reader {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .history-reader-scroll {
+    overflow-y: auto;
+    flex: 1;
+    padding: 20px 22px 30px;
+  }
+
+  .history-reader-date {
+    font-family: 'Source Serif 4', Georgia, serif;
+    font-weight: 600;
+    font-size: 1.4rem;
+    margin-bottom: 4px;
+  }
+
+  .history-reader-time {
+    font-size: 0.72rem;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    margin-bottom: 18px;
+  }
+
+  .history-reader-body {
+    font-size: 1rem;
+    line-height: 1.75;
+    color: var(--text);
+    white-space: pre-wrap;
+  }
 </style>
 </head>
 <body>
@@ -285,6 +423,28 @@
     <div class="modal-actions">
       <button class="btn btn-secondary" id="modalCancel">Cancel</button>
       <button class="btn btn-primary" id="modalSave">Save</button>
+    </div>
+  </div>
+</div>
+
+<div class="history-overlay" id="historyOverlay">
+  <div class="history-panel">
+    <div class="history-head">
+      <h2>History</h2>
+      <button class="history-close" id="historyClose">Close</button>
+    </div>
+
+    <div class="history-list" id="historyList"></div>
+
+    <div class="history-reader" id="historyReader">
+      <div class="history-head">
+        <button class="history-back" id="historyBack">← Back</button>
+      </div>
+      <div class="history-reader-scroll">
+        <div class="history-reader-date" id="readerDate"></div>
+        <div class="history-reader-time" id="readerTime"></div>
+        <div class="history-reader-body" id="readerBody"></div>
+      </div>
     </div>
   </div>
 </div>
@@ -545,6 +705,140 @@
   })();
 
   editor.focus();
+
+  // ---------- History (triple-click blank area) ----------
+  const historyOverlay = document.getElementById("historyOverlay");
+  const historyList = document.getElementById("historyList");
+  const historyReader = document.getElementById("historyReader");
+  const historyClose = document.getElementById("historyClose");
+  const historyBack = document.getElementById("historyBack");
+  const readerDate = document.getElementById("readerDate");
+  const readerTime = document.getElementById("readerTime");
+  const readerBody = document.getElementById("readerBody");
+  const pageEl = document.querySelector(".page");
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({
+      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+    }[c]));
+  }
+
+  function parseNoteContent(fname, text, isDraft) {
+    const lines = text.split("\n");
+    const date = (lines[0] || "").replace(/^#\s*/, "").trim();
+    const time = (lines[2] || "").replace(/^###\s*/, "").trim();
+    const body = lines.slice(4).join("\n").trim();
+    const preview = (body.split("\n").find(l => l.trim().length > 0) || "").trim();
+    return { filename: fname, date, time, body, preview, isDraft };
+  }
+
+  function draftContent(record) {
+    const d = new Date(record.isoStamp);
+    const dl = d.toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    const tl = d.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    return `# ${dl}\n### ${tl}\n\n${record.body}`;
+  }
+
+  async function loadAllNotes() {
+    const cfg = getConfig();
+    let remoteFiles = [];
+
+    if (cfg.owner && cfg.repo) {
+      const headers = { "Accept": "application/vnd.github+json" };
+      if (cfg.token) headers["Authorization"] = `Bearer ${cfg.token}`;
+      const res = await fetch(
+        `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/notes`,
+        { headers }
+      );
+      if (res.ok) {
+        const list = await res.json();
+        remoteFiles = Array.isArray(list) ? list.filter(f => f.name.endsWith(".md")) : [];
+      } else if (res.status !== 404) {
+        throw new Error(`github_${res.status}`);
+      }
+    }
+
+    const remoteNotes = await Promise.all(remoteFiles.map(async f => {
+      const r = await fetch(f.download_url);
+      const text = await r.text();
+      return parseNoteContent(`notes/${f.name}`, text, false);
+    }));
+
+    const pending = await idbGetAll();
+    const pendingNotes = pending
+      .filter(r => r.body && r.body.trim().length > 0)
+      .map(r => parseNoteContent(r.filename, draftContent(r), true));
+
+    const byName = new Map();
+    for (const n of remoteNotes) byName.set(n.filename, n);
+    for (const n of pendingNotes) byName.set(n.filename, n); // local drafts win (freshest)
+
+    return Array.from(byName.values()).sort((a, b) => b.filename.localeCompare(a.filename));
+  }
+
+  function renderHistoryList(notes) {
+    if (notes.length === 0) {
+      historyList.innerHTML = '<div class="history-empty">No notes yet.</div>';
+      return;
+    }
+    historyList.innerHTML = "";
+    notes.forEach(n => {
+      const item = document.createElement("div");
+      item.className = "history-item";
+      item.innerHTML = `
+        <div class="history-item-top">
+          <span class="history-item-date">${escapeHtml(n.date || "Untitled")}</span>
+          <span class="history-item-time">${escapeHtml(n.time || "")}${n.isDraft ? " · syncing" : ""}</span>
+        </div>
+        <div class="history-item-preview">${escapeHtml(n.preview) || "(empty)"}</div>
+      `;
+      item.addEventListener("click", () => openReader(n));
+      historyList.appendChild(item);
+    });
+  }
+
+  function openReader(n) {
+    readerDate.textContent = n.date || "Untitled";
+    readerTime.textContent = n.time || "";
+    readerBody.textContent = n.body || "";
+    historyList.style.display = "none";
+    historyReader.style.display = "flex";
+  }
+
+  function showHistoryList() {
+    historyReader.style.display = "none";
+    historyList.style.display = "";
+  }
+
+  async function openHistory() {
+    historyOverlay.classList.add("open");
+    showHistoryList();
+    historyList.innerHTML = '<div class="history-loading">Loading…</div>';
+    try {
+      const notes = await loadAllNotes();
+      renderHistoryList(notes);
+    } catch (e) {
+      historyList.innerHTML = `<div class="history-error">Couldn't load history (${escapeHtml(String(e.message || e))})</div>`;
+    }
+  }
+
+  function closeHistory() {
+    historyOverlay.classList.remove("open");
+  }
+
+  historyClose.addEventListener("click", closeHistory);
+  historyBack.addEventListener("click", showHistoryList);
+  historyOverlay.addEventListener("click", (e) => { if (e.target === historyOverlay) closeHistory(); });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && historyOverlay.classList.contains("open")) closeHistory();
+  });
+
+  // Triple-click on blank page area (not the editor, header, or buttons) opens history
+  document.addEventListener("click", (e) => {
+    if (e.detail === 3 && (e.target === document.body || e.target === pageEl || e.target === document.documentElement)) {
+      openHistory();
+    }
+  });
 })();
 </script>
 </body>
