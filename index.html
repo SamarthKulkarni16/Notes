@@ -378,6 +378,50 @@
     color: var(--text);
     white-space: pre-wrap;
   }
+
+  .history-reader-actions {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+  }
+
+  .history-edit, .history-delete {
+    background: transparent;
+    border: none;
+    font-family: 'Inter', sans-serif;
+    font-size: 0.85rem;
+    cursor: pointer;
+    padding: 4px 6px;
+  }
+  .history-edit { color: var(--muted); }
+  .history-edit:hover { color: var(--text); }
+  .history-delete { color: var(--muted); }
+  .history-delete:hover { color: var(--error); }
+
+  .history-reader-edit {
+    display: none;
+    width: 100%;
+    min-height: 240px;
+    background: #0e1014;
+    border: 1px solid #2a2f38;
+    border-radius: 6px;
+    padding: 12px 14px;
+    color: var(--text);
+    font-size: 1rem;
+    line-height: 1.75;
+    font-family: 'Inter', sans-serif;
+    resize: vertical;
+    outline: none;
+  }
+  .history-reader-edit:focus { border-color: var(--accent-dim); }
+
+  .history-reader-status {
+    margin-top: 10px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    min-height: 1em;
+  }
+  .history-reader-status.error { color: var(--error); }
 </style>
 </head>
 <body>
@@ -439,11 +483,21 @@
     <div class="history-reader" id="historyReader">
       <div class="history-head">
         <button class="history-back" id="historyBack">← Back</button>
+        <div class="history-reader-actions" id="readerActions">
+          <button class="history-edit" id="readerEdit">Edit</button>
+          <button class="history-delete" id="readerDelete">Delete</button>
+        </div>
+        <div class="history-reader-actions" id="editorActions" style="display:none;">
+          <button class="btn btn-secondary" id="editorCancel">Cancel</button>
+          <button class="btn btn-primary" id="editorSave">Save</button>
+        </div>
       </div>
       <div class="history-reader-scroll">
         <div class="history-reader-date" id="readerDate"></div>
         <div class="history-reader-time" id="readerTime"></div>
         <div class="history-reader-body" id="readerBody"></div>
+        <textarea class="history-reader-edit" id="readerEditBody" style="display:none;"></textarea>
+        <div class="history-reader-status" id="readerStatus"></div>
       </div>
     </div>
   </div>
@@ -742,7 +796,17 @@
   const readerDate = document.getElementById("readerDate");
   const readerTime = document.getElementById("readerTime");
   const readerBody = document.getElementById("readerBody");
+  const readerEditBody = document.getElementById("readerEditBody");
+  const readerStatus = document.getElementById("readerStatus");
+  const readerActions = document.getElementById("readerActions");
+  const editorActions = document.getElementById("editorActions");
+  const readerEditBtn = document.getElementById("readerEdit");
+  const readerDeleteBtn = document.getElementById("readerDelete");
+  const editorCancelBtn = document.getElementById("editorCancel");
+  const editorSaveBtn = document.getElementById("editorSave");
   const pageEl = document.querySelector(".page");
+  let currentNote = null;
+  let confirmingDelete = false;
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, c => ({
@@ -750,13 +814,13 @@
     }[c]));
   }
 
-  function parseNoteContent(fname, text, isDraft) {
+  function parseNoteContent(fname, text, isDraft, isoStamp) {
     const lines = text.split("\n");
     const date = (lines[0] || "").replace(/^#\s*/, "").trim();
     const time = (lines[2] || "").replace(/^###\s*/, "").trim();
     const body = lines.slice(4).join("\n").trim();
     const preview = (body.split("\n").find(l => l.trim().length > 0) || "").trim();
-    return { filename: fname, date, time, body, preview, isDraft };
+    return { filename: fname, date, time, body, preview, isDraft, isoStamp };
   }
 
   function draftContent(record) {
@@ -794,7 +858,7 @@
     const pending = await idbGetAll();
     const pendingNotes = pending
       .filter(r => r.body && r.body.trim().length > 0)
-      .map(r => parseNoteContent(r.filename, draftContent(r), true));
+      .map(r => parseNoteContent(r.filename, draftContent(r), true, r.isoStamp));
 
     const byName = new Map();
     for (const n of remoteNotes) byName.set(n.filename, n);
@@ -825,17 +889,158 @@
   }
 
   function openReader(n) {
+    currentNote = n;
     readerDate.textContent = n.date || "Untitled";
     readerTime.textContent = n.time || "";
     readerBody.textContent = n.body || "";
+    exitEditMode();
     historyList.style.display = "none";
     historyReader.style.display = "flex";
   }
 
   function showHistoryList() {
+    exitEditMode();
+    currentNote = null;
     historyReader.style.display = "none";
     historyList.style.display = "";
   }
+
+  // ---------- Edit / Delete from history ----------
+  function setReaderStatus(msg, isError) {
+    readerStatus.textContent = msg || "";
+    readerStatus.classList.toggle("error", !!isError);
+  }
+
+  function resetDeleteConfirm() {
+    confirmingDelete = false;
+    readerDeleteBtn.textContent = "Delete";
+  }
+
+  function enterEditMode() {
+    if (!currentNote) return;
+    resetDeleteConfirm();
+    setReaderStatus("");
+    readerEditBody.value = currentNote.body || "";
+    readerBody.style.display = "none";
+    readerEditBody.style.display = "block";
+    readerActions.style.display = "none";
+    editorActions.style.display = "flex";
+    readerEditBody.focus();
+  }
+
+  function exitEditMode() {
+    resetDeleteConfirm();
+    setReaderStatus("");
+    readerBody.style.display = "";
+    readerEditBody.style.display = "none";
+    readerActions.style.display = "flex";
+    editorActions.style.display = "none";
+  }
+
+  // Update an already-synced note on GitHub, preserving its original date/time header.
+  async function pushEditToGitHub(note, newBody) {
+    const cfg = getConfig();
+    if (!cfg.token || !cfg.owner || !cfg.repo) throw new Error("not_configured");
+    const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${note.filename}`;
+    const content = `# ${note.date}\n### ${note.time}\n\n${newBody}`;
+    const b64 = btoa(unescape(encodeURIComponent(content)));
+    const sha = await getExistingSha(url, cfg);
+    if (!sha) throw new Error("not_found_remotely");
+    const res = await fetch(url, {
+      method: "PUT",
+      headers: {
+        "Authorization": `Bearer ${cfg.token}`,
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ message: `Edit note ${note.filename}`, content: b64, sha })
+    });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`github_${res.status}: ${errBody.slice(0, 200)}`);
+    }
+    return res.json();
+  }
+
+  // Permanently delete an already-synced note from GitHub.
+  async function deleteNoteFromGitHub(note) {
+    const cfg = getConfig();
+    if (!cfg.token || !cfg.owner || !cfg.repo) throw new Error("not_configured");
+    const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${note.filename}`;
+    const sha = await getExistingSha(url, cfg);
+    if (!sha) return; // already gone
+    const res = await fetch(url, {
+      method: "DELETE",
+      headers: {
+        "Authorization": `Bearer ${cfg.token}`,
+        "Accept": "application/vnd.github+json",
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({ message: `Delete note ${note.filename}`, sha })
+    });
+    if (!res.ok) {
+      const errBody = await res.text().catch(() => "");
+      throw new Error(`github_${res.status}: ${errBody.slice(0, 200)}`);
+    }
+  }
+
+  async function saveEdit() {
+    if (!currentNote) return;
+    const newBody = readerEditBody.value;
+    editorSaveBtn.disabled = true;
+    setReaderStatus("saving…");
+    try {
+      if (currentNote.isDraft) {
+        await idbPut({ filename: currentNote.filename, body: newBody, isoStamp: currentNote.isoStamp });
+      } else {
+        await pushEditToGitHub(currentNote, newBody);
+      }
+      currentNote.body = newBody;
+      readerBody.textContent = newBody;
+      exitEditMode();
+      setReaderStatus("saved");
+      setTimeout(() => setReaderStatus(""), 1500);
+    } catch (e) {
+      setReaderStatus(`Couldn't save (${String(e.message || e)})`, true);
+    } finally {
+      editorSaveBtn.disabled = false;
+    }
+  }
+
+  async function deleteCurrentNote() {
+    if (!currentNote) return;
+    if (!confirmingDelete) {
+      confirmingDelete = true;
+      readerDeleteBtn.textContent = "Confirm delete?";
+      return;
+    }
+    resetDeleteConfirm();
+    setReaderStatus("deleting…");
+    readerDeleteBtn.disabled = true;
+    try {
+      if (currentNote.isDraft) {
+        await idbDelete(currentNote.filename);
+      } else {
+        await deleteNoteFromGitHub(currentNote);
+      }
+      showHistoryList();
+      historyList.innerHTML = '<div class="history-loading">Loading…</div>';
+      const notes = await loadAllNotes();
+      renderHistoryList(notes);
+    } catch (e) {
+      setReaderStatus(`Couldn't delete (${String(e.message || e)})`, true);
+    } finally {
+      readerDeleteBtn.disabled = false;
+    }
+  }
+
+  readerEditBtn.addEventListener("click", enterEditMode);
+  editorCancelBtn.addEventListener("click", exitEditMode);
+  editorSaveBtn.addEventListener("click", saveEdit);
+  readerDeleteBtn.addEventListener("click", deleteCurrentNote);
+  historyReader.addEventListener("click", (e) => {
+    if (e.target !== readerDeleteBtn && confirmingDelete) resetDeleteConfirm();
+  });
 
   async function openHistory() {
     historyOverlay.classList.add("open");
