@@ -592,6 +592,29 @@
     return res.json();
   }
 
+  // Removes a note from GitHub if it was already synced before being cleared out.
+  // Best-effort: failures are logged but don't block the editor.
+  async function deleteRemoteNote(fname) {
+    const cfg = getConfig();
+    if (!cfg.token || !cfg.owner || !cfg.repo) return;
+    try {
+      const url = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${fname}`;
+      const sha = await getExistingSha(url, cfg);
+      if (!sha) return; // never made it to GitHub — nothing to clean up
+      await fetch(url, {
+        method: "DELETE",
+        headers: {
+          "Authorization": `Bearer ${cfg.token}`,
+          "Accept": "application/vnd.github+json",
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ message: `Remove emptied note ${fname}`, sha })
+      });
+    } catch (e) {
+      console.error("Failed to remove emptied note from GitHub", fname, e);
+    }
+  }
+
   // ---------- Sync queue: flush all pending notes ----------
   let flushing = false;
   async function flushQueue() {
@@ -640,6 +663,10 @@
       const body = editor.value;
       if (body.trim().length === 0) {
         setStatus("saved", "empty");
+        // Was already saved locally and/or synced before being cleared — clean both up
+        // so an emptied-out session never lingers as a note.
+        await idbDelete(filename);
+        deleteRemoteNote(filename);
         return;
       }
       await idbPut({ filename, body, isoStamp });
