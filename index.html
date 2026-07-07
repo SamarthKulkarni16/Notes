@@ -596,6 +596,7 @@
   async function getExistingSha(url, cfg) {
     const res = await fetch(url, {
       method: "GET",
+      cache: "no-store",
       headers: {
         "Authorization": `Bearer ${cfg.token}`,
         "Accept": "application/vnd.github+json"
@@ -839,7 +840,7 @@
       if (cfg.token) headers["Authorization"] = `Bearer ${cfg.token}`;
       const res = await fetch(
         `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/notes`,
-        { headers }
+        { headers, cache: "no-store" }
       );
       if (res.ok) {
         const list = await res.json();
@@ -850,7 +851,7 @@
     }
 
     const remoteNotes = await Promise.all(remoteFiles.map(async f => {
-      const r = await fetch(f.download_url);
+      const r = await fetch(f.download_url, { cache: "no-store" });
       const text = await r.text();
       return parseNoteContent(`notes/${f.name}`, text, false);
     }));
@@ -1018,6 +1019,7 @@
     setReaderStatus("deleting…");
     readerDeleteBtn.disabled = true;
     try {
+      const deletedFilename = currentNote.filename;
       if (currentNote.isDraft) {
         await idbDelete(currentNote.filename);
       } else {
@@ -1025,7 +1027,11 @@
       }
       showHistoryList();
       historyList.innerHTML = '<div class="history-loading">Loading…</div>';
-      const notes = await loadAllNotes();
+      // Re-fetch in the background, but don't rely on it alone: GitHub's API
+      // caches the folder listing for up to 60s, so a fresh fetch right after
+      // a delete can still return the just-deleted file. Filter it out locally
+      // so the UI reflects the delete immediately regardless of cache staleness.
+      const notes = (await loadAllNotes()).filter(n => n.filename !== deletedFilename);
       renderHistoryList(notes);
     } catch (e) {
       setReaderStatus(`Couldn't delete (${String(e.message || e)})`, true);
